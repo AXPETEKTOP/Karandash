@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Черчение на сетке 50x50</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            background: white; 
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .canvas-container {
+            flex: 1;
+            overflow: hidden;
+            position: relative;
+        }
+        canvas { 
+            display: block; 
+            background: white;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .toolbar {
+            background: #f5f5f5;
+            padding: 10px;
+            text-align: center;
+            border-top: 1px solid #ccc;
+            flex-shrink: 0;
+        }
+        button { 
+            margin: 0 5px; 
+            padding: 10px 15px; 
+            background: white; 
+            border: 1px solid #ccc; 
+            border-radius: 5px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="canvas-container">
+        <canvas id="gridCanvas"></canvas>
+    </div>
+    <div class="toolbar">
+        <button id="undoBtn">Назад</button>
+        <button id="clearBtn">Очистить</button>
+    </div>
+
+    <script>
+        class GridDrawing {
+            constructor() {
+                this.canvas = document.getElementById('gridCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                
+                // Сетка 50x50 клеток
+                this.cells = 50;
+                this.baseCellSize = 20; // Базовый размер клетки в пикселях
+                
+                // Масштабирование и панорамирование
+                this.scale = 1;
+                this.offsetX = 0;
+                this.offsetY = 0;
+                this.isDragging = false;
+                this.lastX = 0;
+                this.lastY = 0;
+                
+                // Данные для рисования
+                this.segments = [];
+                this.undoStack = [];
+                this.firstNode = null;
+                this.tempNode = null;
+                
+                this.init();
+            }
+            
+            init() {
+                this.resizeCanvas();
+                this.setupEventListeners();
+                this.centerView();
+                this.draw();
+                
+                window.addEventListener('resize', () => {
+                    this.resizeCanvas();
+                    this.draw();
+                });
+            }
+            
+            resizeCanvas() {
+                const container = this.canvas.parentElement;
+                this.canvas.width = container.clientWidth;
+                this.canvas.height = container.clientHeight;
+            }
+            
+            centerView() {
+                const container = this.canvas.parentElement;
+                const gridWidth = this.cells * this.baseCellSize * this.scale;
+                const gridHeight = this.cells * this.baseCellSize * this.scale;
+                
+                this.offsetX = (container.clientWidth - gridWidth) / 2;
+                this.offsetY = (container.clientHeight - gridHeight) / 2;
+            }
+            
+            setupEventListeners() {
+                // Обработчики мыши
+                this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
+                this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+                this.canvas.addEventListener('mouseup', () => this.handleMouseUp());
+                this.canvas.addEventListener('wheel', (e) => this.handleWheel(e));
+                
+                // Обработчики касания
+                this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e));
+                this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e));
+                this.canvas.addEventListener('touchend', () => this.handleTouchEnd());
+                
+                // Кнопки
+                document.getElementById('undoBtn').addEventListener('click', () => this.undo());
+                document.getElementById('clearBtn').addEventListener('click', () => this.clear());
+            }
+            
+            // Преобразование экранных координат в координаты сетки
+            screenToGrid(x, y) {
+                const gridX = Math.round((x - this.offsetX) / (this.baseCellSize * this.scale));
+                const gridY = Math.round((y - this.offsetY) / (this.baseCellSize * this.scale));
+                
+                if (gridX < 0 || gridX >= this.cells || gridY < 0 || gridY >= this.cells) {
+                    return null;
+                }
+                
+                return { x: gridX, y: gridY };
+            }
+            
+            // Преобразование координат сетки в экранные координаты
+            gridToScreen(gridX, gridY) {
+                return {
+                    x: gridX * this.baseCellSize * this.scale + this.offsetX,
+                    y: gridY * this.baseCellSize * this.scale + this.offsetY
+                };
+            }
+            
+            handleMouseDown(e) {
+                e.preventDefault();
+                const rect = this.canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                
+                if (e.button === 0) { // Левая кнопка мыши - рисование
+                    this.handleTap(x, y);
+                } else if (e.button === 2) { // Правая кнопка мыши - панорамирование
+                    this.isDragging = true;
+                    this.lastX = x;
+                    this.lastY = y;
+                    this.canvas.style.cursor = 'grabbing';
+                }
+            }
+            
+            handleMouseMove(e) {
+                e.preventDefault();
+                const rect = this.canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                
+                if (this.isDragging) {
+                    // Панорамирование
+                    const dx = x - this.lastX;
+                    const dy = y - this.lastY;
+                    this.offsetX += dx;
+                    this.offsetY += dy;
+                    this.lastX = x;
+                    this.lastY = y;
+                    this.draw();
+                } else if (this.firstNode) {
+                    // Обновление временного отрезка
+                    this.updateTempNode(x, y);
+                }
+            }
+            
+            handleMouseUp() {
+                this.isDragging = false;
+                this.canvas.style.cursor = 'default';
+            }
+            
+            handleWheel(e) {
+                e.preventDefault();
+                
+                const rect = this.canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                
+                // Масштабирование относительно курсора
+                const zoomIntensity = 0.1;
+                const wheel = e.deltaY < 0 ? 1 : -1;
+                const newScale = this.scale + wheel * zoomIntensity;
+                
+                // Ограничиваем масштаб
+                if (newScale >= 0.1 && newScale <= 5) {
+                    // Сохраняем позицию курсора в координатах сетки до масштабирования
+                    const gridXBefore = (mouseX - this.offsetX) / (this.baseCellSize * this.scale);
+                    const gridYBefore = (mouseY - this.offsetY) / (this.baseCellSize * this.scale);
+                    
+                    this.scale = newScale;
+                    
+                    // Корректируем смещение для сохранения позиции под курсором
+                    const gridXAfter = (mouseX - this.offsetX) / (this.baseCellSize * this.scale);
+                    const gridYAfter = (mouseY - this.offsetY) / (this.baseCellSize * this.scale);
+                    
+                    this.offsetX += (gridXAfter - gridXBefore) * this.baseCellSize * this.scale;
+                    this.offsetY += (gridYAfter - gridYBefore) * this.baseCellSize * this.scale;
+                    
+                    this.draw();
+                }
+            }
+            
+            handleTouchStart(e) {
+                e.preventDefault();
+                if (e.touches.length === 1) {
+                    const touch = e.touches[0];
+                    const rect = this.canvas.getBoundingClientRect();
+                    const x = touch.clientX - rect.left;
+                    const y = touch.clientY - rect.top;
+                    this.handleTap(x, y);
+                } else if (e.touches.length === 2) {
+                    // Начало жеста масштабирования/панорамирования
+                    this.lastTouchDistance = this.getTouchDistance(e.touches);
+                    this.lastTouchCenter = this.getTouchCenter(e.touches);
+                }
+            }
+            
+            handleTouchMove(e) {
+                e.preventDefault();
+                
+                if (e.touches.length === 1 && this.firstNode) {
+                    const touch = e.touches[0];
+                    const rect = this.canvas.getBoundingClientRect();
+                    const x = touch.clientX - rect.left;
+                    const y = touch.clientY - rect.top;
+                    this.updateTempNode(x, y);
+                } else if (e.touches.length === 2) {
+                    // Обработка жеста масштабирования/панорамирования
+                    const currentDistance = this.getTouchDistance(e.touches);
+                    const currentCenter = this.getTouchCenter(e.touches);
+                    
+                    if (this.lastTouchDistance && this.lastTouchCenter) {
+                        // Масштабирование
+                        const scaleChange = currentDistance / this.lastTouchDistance;
+                        const newScale = this.scale * scaleChange;
+                        
+                        if (newScale >= 0.1 && newScale <= 5) {
+                            // Корректируем смещение для сохранения центра масштабирования
+                            const centerXBefore = (this.lastTouchCenter.x - this.offsetX) / (this.baseCellSize * this.scale);
+                            const centerYBefore = (this.lastTouchCenter.y - this.offsetY) / (this.baseCellSize * this.scale);
+                            
+                            this.scale = newScale;
+                            
+                            const centerXAfter = (currentCenter.x - this.offsetX) / (this.baseCellSize * this.scale);
+                            const centerYAfter = (currentCenter.y - this.offsetY) / (this.baseCellSize * this.scale);
+                            
+                            this.offsetX += (centerXAfter - centerXBefore) * this.baseCellSize * this.scale;
+                            this.offsetY += (centerYAfter - centerYBefore) * this.baseCellSize * this.scale;
+                        }
+                        
+                        // Панорамирование
+                        const dx = currentCenter.x - this.lastTouchCenter.x;
+                        const dy = currentCenter.y - this.lastTouchCenter.y;
+                        this.offsetX += dx;
+                        this.offsetY += dy;
+                    }
+                    
+                    this.lastTouchDistance = currentDistance;
+                    this.lastTouchCenter = currentCenter;
+                    this.draw();
+                }
+            }
+            
+            handleTouchEnd() {
+                this.lastTouchDistance = null;
+                this.lastTouchCenter = null;
+            }
+            
+            getTouchDistance(touches) {
+                const dx = touches[0].clientX - touches[1].clientX;
+                const dy = touches[0].clientY - touches[1].clientY;
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+            
+            getTouchCenter(touches) {
+                return {
+                    x: (touches[0].clientX + touches[1].clientX) / 2,
+                    y: (touches[0].clientY + touches[1].clientY) / 2
+                };
+            }
+            
+            handleTap(x, y) {
+                const node = this.screenToGrid(x, y);
+                if (!node) return;
+                
+                if (this.firstNode === null) {
+                    // Первое касание - выбираем начальную точку
+                    this.firstNode = node;
+                    this.tempNode = node;
+                } else {
+                    if (this.nodesEqual(node, this.firstNode)) {
+                        // Касание того же узла - отмена
+                        this.firstNode = null;
+                        this.tempNode = null;
+                    } else {
+                        // Создаем отрезок
+                        this.saveState();
+                        this.segments.push({
+                            start: this.firstNode,
+                            end: node
+                        });
+                        this.firstNode = null;
+                        this.tempNode = null;
+                    }
+                }
+                this.draw();
+            }
+            
+            updateTempNode(x, y) {
+                const node = this.screenToGrid(x, y);
+                if (node && !this.nodesEqual(node, this.tempNode)) {
+                    this.tempNode = node;
+                    this.draw();
+                }
+            }
+            
+            nodesEqual(node1, node2) {
+                return node1 && node2 && node1.x === node2.x && node1.y === node2.y;
+            }
+            
+            draw() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // Сохраняем состояние контекста
+                this.ctx.save();
+                
+                // Устанавливаем обрезку по границам сетки
+                this.ctx.beginPath();
+                this.ctx.rect(
+                    this.offsetX, 
+                    this.offsetY, 
+                    this.cells * this.baseCellSize * this.scale, 
+                    this.cells * this.baseCellSize * this.scale
+                );
+                this.ctx.clip();
+                
+                this.drawGrid();
+                this.drawSegments();
+                this.drawTempSegment();
+                
+                // Восстанавливаем состояние контекста
+                this.ctx.restore();
+            }
+            
+            drawGrid() {
+                this.ctx.strokeStyle = 'rgba(150, 150, 150, 0.7)';
+                this.ctx.lineWidth = 1;
+                
+                const cellSize = this.baseCellSize * this.scale;
+                const gridWidth = this.cells * cellSize;
+                const gridHeight = this.cells * cellSize;
+                
+                // Вертикальные линии
+                for (let x = 0; x <= this.cells; x++) {
+                    const screenX = x * cellSize + this.offsetX;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(screenX, this.offsetY);
+                    this.ctx.lineTo(screenX, this.offsetY + gridHeight);
+                    this.ctx.stroke();
+                }
+                
+                // Горизонтальные линии
+                for (let y = 0; y <= this.cells; y++) {
+                    const screenY = y * cellSize + this.offsetY;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(this.offsetX, screenY);
+                    this.ctx.lineTo(this.offsetX + gridWidth, screenY);
+                    this.ctx.stroke();
+                }
+            }
+            
+            drawSegments() {
+                this.ctx.strokeStyle = 'black';
+                this.ctx.lineWidth = 3 * this.scale;
+                this.ctx.lineCap = 'round';
+                
+                this.segments.forEach(segment => {
+                    const start = this.gridToScreen(segment.start.x, segment.start.y);
+                    const end = this.gridToScreen(segment.end.x, segment.end.y);
+                    
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(start.x, start.y);
+                    this.ctx.lineTo(end.x, end.y);
+                    this.ctx.stroke();
+                });
+            }
+            
+            drawTempSegment() {
+                if (this.firstNode && this.tempNode && !this.nodesEqual(this.firstNode, this.tempNode)) {
+                    this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+                    this.ctx.lineWidth = 3 * this.scale;
+                    this.ctx.lineCap = 'round';
+                    
+                    const start = this.gridToScreen(this.firstNode.x, this.firstNode.y);
+                    const end = this.gridToScreen(this.tempNode.x, this.tempNode.y);
+                    
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(start.x, start.y);
+                    this.ctx.lineTo(end.x, end.y);
+                    this.ctx.stroke();
+                }
+            }
+            
+            saveState() {
+                this.undoStack.push([...this.segments]);
+            }
+            
+            undo() {
+                if (this.undoStack.length > 0) {
+                    this.segments = this.undoStack.pop();
+                    this.draw();
+                }
+            }
+            
+            clear() {
+                this.saveState();
+                this.segments = [];
+                this.firstNode = null;
+                this.tempNode = null;
+                this.draw();
+            }
+        }
+
+        // Запуск после загрузки страницы
+        window.addEventListener('load', () => {
+            new GridDrawing();
+        });
+        
+        // Блокируем контекстное меню (правую кнопку мыши)
+        document.addEventListener('contextmenu', (e) => e.preventDefault());
+    </script>
+</body>
+</html>
