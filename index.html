@@ -2,44 +2,92 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Черчение на сетке 50x50</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Черчение на сетке</title>
+    
+    <!-- PWA мета-теги -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Сетка">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#ffffff">
+    
+    <!-- Иконки для PWA -->
+    <link rel="icon" type="image/png" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="manifest" href="manifest.json">
+    
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        
         body { 
-            margin: 0; 
-            padding: 0; 
             background: white; 
             height: 100vh;
+            height: -webkit-fill-available;
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
         }
+        
         .canvas-container {
             flex: 1;
             overflow: hidden;
             position: relative;
+            background: white;
         }
+        
         canvas { 
             display: block; 
             background: white;
             position: absolute;
             top: 0;
             left: 0;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
         }
+        
         .toolbar {
             background: #f5f5f5;
             padding: 10px;
             text-align: center;
             border-top: 1px solid #ccc;
             flex-shrink: 0;
+            min-height: 60px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
         }
+        
         button { 
-            margin: 0 5px; 
-            padding: 10px 15px; 
+            padding: 12px 20px; 
             background: white; 
             border: 1px solid #ccc; 
-            border-radius: 5px;
+            border-radius: 8px;
             font-size: 16px;
+            min-width: 100px;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        
+        /* Специфичные стили для Safari */
+        @supports (-webkit-touch-callout: none) {
+            body {
+                height: -webkit-fill-available;
+            }
+            .toolbar {
+                padding-bottom: max(10px, env(safe-area-inset-bottom));
+            }
         }
     </style>
 </head>
@@ -60,7 +108,7 @@
                 
                 // Сетка 50x50 клеток
                 this.cells = 50;
-                this.baseCellSize = 20; // Базовый размер клетки в пикселях
+                this.baseCellSize = 20;
                 
                 // Масштабирование и панорамирование
                 this.scale = 1;
@@ -69,6 +117,11 @@
                 this.isDragging = false;
                 this.lastX = 0;
                 this.lastY = 0;
+                
+                // Для обработки мультитача
+                this.isScaling = false;
+                this.lastTouchDistance = null;
+                this.lastTouchCenter = null;
                 
                 // Данные для рисования
                 this.segments = [];
@@ -89,6 +142,11 @@
                     this.resizeCanvas();
                     this.draw();
                 });
+                
+                // Предотвращаем масштабирование страницы на iOS
+                document.addEventListener('gesturestart', (e) => e.preventDefault());
+                document.addEventListener('gesturechange', (e) => e.preventDefault());
+                document.addEventListener('gestureend', (e) => e.preventDefault());
             }
             
             resizeCanvas() {
@@ -113,17 +171,16 @@
                 this.canvas.addEventListener('mouseup', () => this.handleMouseUp());
                 this.canvas.addEventListener('wheel', (e) => this.handleWheel(e));
                 
-                // Обработчики касания
-                this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e));
-                this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e));
-                this.canvas.addEventListener('touchend', () => this.handleTouchEnd());
+                // Обработчики касания с passive: false для предотвращения скролла
+                this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
+                this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+                this.canvas.addEventListener('touchend', () => this.handleTouchEnd(), { passive: false });
                 
                 // Кнопки
                 document.getElementById('undoBtn').addEventListener('click', () => this.undo());
                 document.getElementById('clearBtn').addEventListener('click', () => this.clear());
             }
             
-            // Преобразование экранных координат в координаты сетки
             screenToGrid(x, y) {
                 const gridX = Math.round((x - this.offsetX) / (this.baseCellSize * this.scale));
                 const gridY = Math.round((y - this.offsetY) / (this.baseCellSize * this.scale));
@@ -135,7 +192,6 @@
                 return { x: gridX, y: gridY };
             }
             
-            // Преобразование координат сетки в экранные координаты
             gridToScreen(gridX, gridY) {
                 return {
                     x: gridX * this.baseCellSize * this.scale + this.offsetX,
@@ -145,13 +201,15 @@
             
             handleMouseDown(e) {
                 e.preventDefault();
+                if (this.isScaling) return;
+                
                 const rect = this.canvas.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 const y = e.clientY - rect.top;
                 
-                if (e.button === 0) { // Левая кнопка мыши - рисование
+                if (e.button === 0) {
                     this.handleTap(x, y);
-                } else if (e.button === 2) { // Правая кнопка мыши - панорамирование
+                } else if (e.button === 2) {
                     this.isDragging = true;
                     this.lastX = x;
                     this.lastY = y;
@@ -166,7 +224,6 @@
                 const y = e.clientY - rect.top;
                 
                 if (this.isDragging) {
-                    // Панорамирование
                     const dx = x - this.lastX;
                     const dy = y - this.lastY;
                     this.offsetX += dx;
@@ -174,8 +231,7 @@
                     this.lastX = x;
                     this.lastY = y;
                     this.draw();
-                } else if (this.firstNode) {
-                    // Обновление временного отрезка
+                } else if (this.firstNode && !this.isScaling) {
                     this.updateTempNode(x, y);
                 }
             }
@@ -192,20 +248,16 @@
                 const mouseX = e.clientX - rect.left;
                 const mouseY = e.clientY - rect.top;
                 
-                // Масштабирование относительно курсора
                 const zoomIntensity = 0.1;
                 const wheel = e.deltaY < 0 ? 1 : -1;
                 const newScale = this.scale + wheel * zoomIntensity;
                 
-                // Ограничиваем масштаб
                 if (newScale >= 0.1 && newScale <= 5) {
-                    // Сохраняем позицию курсора в координатах сетки до масштабирования
                     const gridXBefore = (mouseX - this.offsetX) / (this.baseCellSize * this.scale);
                     const gridYBefore = (mouseY - this.offsetY) / (this.baseCellSize * this.scale);
                     
                     this.scale = newScale;
                     
-                    // Корректируем смещение для сохранения позиции под курсором
                     const gridXAfter = (mouseX - this.offsetX) / (this.baseCellSize * this.scale);
                     const gridYAfter = (mouseY - this.offsetY) / (this.baseCellSize * this.scale);
                     
@@ -218,40 +270,42 @@
             
             handleTouchStart(e) {
                 e.preventDefault();
-                if (e.touches.length === 1) {
+                
+                if (e.touches.length === 1 && !this.isScaling) {
                     const touch = e.touches[0];
                     const rect = this.canvas.getBoundingClientRect();
                     const x = touch.clientX - rect.left;
                     const y = touch.clientY - rect.top;
                     this.handleTap(x, y);
                 } else if (e.touches.length === 2) {
-                    // Начало жеста масштабирования/панорамирования
+                    this.isScaling = true;
                     this.lastTouchDistance = this.getTouchDistance(e.touches);
                     this.lastTouchCenter = this.getTouchCenter(e.touches);
+                    // Сбрасываем состояние рисования при начале масштабирования
+                    this.firstNode = null;
+                    this.tempNode = null;
                 }
             }
             
             handleTouchMove(e) {
                 e.preventDefault();
                 
-                if (e.touches.length === 1 && this.firstNode) {
+                if (e.touches.length === 1 && this.firstNode && !this.isScaling) {
                     const touch = e.touches[0];
                     const rect = this.canvas.getBoundingClientRect();
                     const x = touch.clientX - rect.left;
                     const y = touch.clientY - rect.top;
                     this.updateTempNode(x, y);
                 } else if (e.touches.length === 2) {
-                    // Обработка жеста масштабирования/панорамирования
+                    this.isScaling = true;
                     const currentDistance = this.getTouchDistance(e.touches);
                     const currentCenter = this.getTouchCenter(e.touches);
                     
                     if (this.lastTouchDistance && this.lastTouchCenter) {
-                        // Масштабирование
                         const scaleChange = currentDistance / this.lastTouchDistance;
                         const newScale = this.scale * scaleChange;
                         
                         if (newScale >= 0.1 && newScale <= 5) {
-                            // Корректируем смещение для сохранения центра масштабирования
                             const centerXBefore = (this.lastTouchCenter.x - this.offsetX) / (this.baseCellSize * this.scale);
                             const centerYBefore = (this.lastTouchCenter.y - this.offsetY) / (this.baseCellSize * this.scale);
                             
@@ -264,7 +318,6 @@
                             this.offsetY += (centerYAfter - centerYBefore) * this.baseCellSize * this.scale;
                         }
                         
-                        // Панорамирование
                         const dx = currentCenter.x - this.lastTouchCenter.x;
                         const dy = currentCenter.y - this.lastTouchCenter.y;
                         this.offsetX += dx;
@@ -278,6 +331,12 @@
             }
             
             handleTouchEnd() {
+                if (this.isScaling) {
+                    // Небольшая задержка перед сбросом флага масштабирования
+                    setTimeout(() => {
+                        this.isScaling = false;
+                    }, 50);
+                }
                 this.lastTouchDistance = null;
                 this.lastTouchCenter = null;
             }
@@ -296,20 +355,19 @@
             }
             
             handleTap(x, y) {
+                if (this.isScaling) return;
+                
                 const node = this.screenToGrid(x, y);
                 if (!node) return;
                 
                 if (this.firstNode === null) {
-                    // Первое касание - выбираем начальную точку
                     this.firstNode = node;
                     this.tempNode = node;
                 } else {
                     if (this.nodesEqual(node, this.firstNode)) {
-                        // Касание того же узла - отмена
                         this.firstNode = null;
                         this.tempNode = null;
                     } else {
-                        // Создаем отрезок
                         this.saveState();
                         this.segments.push({
                             start: this.firstNode,
@@ -323,6 +381,8 @@
             }
             
             updateTempNode(x, y) {
+                if (this.isScaling) return;
+                
                 const node = this.screenToGrid(x, y);
                 if (node && !this.nodesEqual(node, this.tempNode)) {
                     this.tempNode = node;
@@ -337,10 +397,8 @@
             draw() {
                 this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
                 
-                // Сохраняем состояние контекста
                 this.ctx.save();
                 
-                // Устанавливаем обрезку по границам сетки
                 this.ctx.beginPath();
                 this.ctx.rect(
                     this.offsetX, 
@@ -354,7 +412,6 @@
                 this.drawSegments();
                 this.drawTempSegment();
                 
-                // Восстанавливаем состояние контекста
                 this.ctx.restore();
             }
             
@@ -366,7 +423,6 @@
                 const gridWidth = this.cells * cellSize;
                 const gridHeight = this.cells * cellSize;
                 
-                // Вертикальные линии
                 for (let x = 0; x <= this.cells; x++) {
                     const screenX = x * cellSize + this.offsetX;
                     this.ctx.beginPath();
@@ -375,7 +431,6 @@
                     this.ctx.stroke();
                 }
                 
-                // Горизонтальные линии
                 for (let y = 0; y <= this.cells; y++) {
                     const screenY = y * cellSize + this.offsetY;
                     this.ctx.beginPath();
@@ -442,8 +497,15 @@
             new GridDrawing();
         });
         
-        // Блокируем контекстное меню (правую кнопку мыши)
+        // Блокируем контекстное меню
         document.addEventListener('contextmenu', (e) => e.preventDefault());
+        
+        // Предотвращаем масштабирование страницы на iOS
+        document.addEventListener('touchmove', (e) => {
+            if (e.scale !== 1) {
+                e.preventDefault();
+            }
+        }, { passive: false });
     </script>
 </body>
 </html>
